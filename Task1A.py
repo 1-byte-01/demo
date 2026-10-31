@@ -1,0 +1,265 @@
+'''
+*****************************************************************************************
+*
+*        =================================================
+*             Echo Balancer (EB) Theme (eYRC 2026-27)
+*        =================================================
+*
+*  This script is to implement Task 1A of Echo Balancer (EB) Theme (eYRC 2026-27).
+*
+*  This software is made available on an "AS IS WHERE IS BASIS".
+*  Licensee/end user indemnifies and will keep e-Yantra indemnified from
+*  any and all claim(s) that emanate from the use of the Software or
+*  breach of the terms of this agreement.
+*
+*****************************************************************************************
+'''
+
+# Team ID:          6382
+# Author List:      Jerson Miranda, Flavia Melisa Oliveira, Ashley Snedon Fernandes, Simran Katie Afonso
+# Filename:         Task1A.py
+# Functions:        find_equilibrium_points, find_A_B_matrices,
+#                   find_eigen_values, compute_lqr_gain
+# Global variables: theta, omega, u, theta_dot, omega_dot, STATES
+
+import sympy as sp
+import numpy as np
+import control
+
+
+############################################################################
+#                        THE SYSTEM  -  fill this in                       #
+############################################################################
+# The pendulum-with-torque system from the "Modeling of non-linear Dynamical
+# Systems" Learnings page, with one added damping term:
+#
+#     theta_dot = omega
+#     omega_dot = -10*sin(theta) - omega + u
+#
+#   theta = angle from vertical   omega = angular rate   u = applied torque
+#
+# Use sympy symbols, not plain Python numbers, so these expressions stay
+# differentiable.
+
+# Define the symbolic variables
+theta, omega, u = sp.symbols('theta omega u')
+
+# Define the differential equations
+theta_dot = omega
+omega_dot = -10*sp.sin(theta) - omega + u
+
+# The order of the states. Keep it as angle first, then its rate.
+STATES = [theta, omega]
+
+############################################################################
+
+
+def find_equilibrium_points():
+    '''
+    Find every point where the pendulum is not accelerating: switch off the
+    input, set both derivatives to zero, and solve for theta and omega
+    together.
+
+    Returns:
+    ---
+    `equi_points`: [ list of tuples ] one (theta, omega) pair per equilibrium
+
+    Hint: sp.solve() takes a list of expressions (assumed equal to zero) and
+    a list of unknowns. sin(theta) = 0 has infinitely many roots in theory;
+    only two are physically distinct.
+    '''
+
+    ###### WRITE YOUR CODE HERE ################
+    # HINT: sp.solve() takes a list of expressions (each taken to equal
+    # zero) and a list of unknowns, e.g.
+    #     sp.solve([x + y - 2, x - y], [x, y])       # -> [(1, 1)]
+
+    # 1. Switch off the input
+    eq1 = theta_dot.subs(u, 0)
+    eq2 = omega_dot.subs(u, 0)
+
+    # 2 & 3. Set both derivatives to zero and solve together
+    equi_points = sp.solve([eq1, eq2], [theta, omega])
+
+    ############################################
+
+    return equi_points
+
+
+def find_A_B_matrices(eq_points):
+    '''
+    Linearise the system at every equilibrium point: f.jacobian(STATES)
+    gives A and f.jacobian([u]) gives B, where f = [theta_dot, omega_dot].
+    Using jacobian() instead of writing each partial derivative by hand is
+    what lets this same code work unchanged on Task 1B's four-state model.
+    At each point, substitute the state values and u = 0.
+
+    Input Arguments:
+    ---
+    `eq_points`: [ list of tuples ] the points from find_equilibrium_points()
+
+    Returns:
+    ---
+    `A_matrices`, `B_matrices`: [ lists of sympy Matrix ]
+
+    Note: B does not depend on theta here, so it is the same at both points;
+    that is expected, not a mistake.
+    '''
+    f = sp.Matrix([theta_dot, omega_dot])
+
+    A_matrices, B_matrices = [], []
+
+    ###### WRITE YOUR CODE HERE ################
+    # HINT: a column Matrix has a .jacobian() method, e.g.
+    #     sp.Matrix([x * y, x + k]).jacobian([x, y])   # w.r.t. the states
+    #     sp.Matrix([x * y, x + k]).jacobian([k])      # w.r.t. the input
+
+    # Symbolic Jacobians (still contain theta, omega, u)
+    A_sym = f.jacobian(STATES)
+    B_sym = f.jacobian([u])
+
+    # Evaluate at each equilibrium point, with u = 0
+    for (th_eq, om_eq) in eq_points:
+        subs_dict = {theta: th_eq, omega: om_eq, u: 0}
+        A_matrices.append(A_sym.subs(subs_dict))
+        B_matrices.append(B_sym.subs(subs_dict))
+
+    ############################################
+
+    return A_matrices, B_matrices
+
+
+def find_eigen_values(A_matrices):
+    '''
+    Work out whether the pendulum, left alone, falls back or falls away at
+    each equilibrium: call .eigenvals() on each A matrix, then mark it
+    'Stable' if every eigenvalue has a strictly negative real part, else
+    'Unstable'.
+
+    Input Arguments:
+    ---
+    `A_matrices`: [ list of sympy Matrix ] from find_A_B_matrices()
+
+    Returns:
+    ---
+    `eigen_values`: [ list ] one .eigenvals() dict per point
+    `stability`:    [ list of str ] 'Stable' or 'Unstable' per point
+
+    Hint: sp.re(value) gives the real part. A complex pair with a negative
+    real part is still stable; it just oscillates on the way back.
+    '''
+    eigen_values = []
+    stability = []
+
+    ###### WRITE YOUR CODE HERE ################
+    # HINT: matrix.eigenvals() returns a dict of {eigenvalue: multiplicity},
+    # e.g. sp.Matrix([[0, 1], [-4, -2]]).eigenvals()
+
+    for A in A_matrices:
+        eigs = A.eigenvals()            # {eigenvalue: multiplicity}
+        eigen_values.append(eigs)
+
+        # Stable only if EVERY eigenvalue has a strictly negative real part
+        is_stable = all(sp.re(sp.N(val)) < 0 for val in eigs.keys())
+        stability.append('Stable' if is_stable else 'Unstable')
+
+    ############################################
+
+    return eigen_values, stability
+
+
+def compute_lqr_gain(A_matrices, B_matrices, stability):
+    '''
+    Design the controller for the one equilibrium that needs it: hanging
+    down settles back on its own, balanced upright does not.
+
+    Input Arguments:
+    ---
+    `A_matrices`, `B_matrices`: [ lists of sympy Matrix ]
+    `stability`: [ list of str ] from find_eigen_values()
+
+    Returns:
+    ---
+    `K`: [ numpy array ] the LQR gain, one entry per state
+
+    Steps: pick out the A and B at the unstable equilibrium, convert both to
+    float numpy arrays (control.lqr() will not take sympy Matrix objects),
+    then call control.lqr(A, B, Q, R) and keep the first of its three
+    return values.
+
+    Note: do not change Q or R; they are fixed for Task 1A so every team's
+    K is comparable.
+    '''
+    # Define the Q and R matrices
+    Q = np.eye(2)        # State weighting matrix
+    R = np.array([1])    # Control weighting matrix
+
+    ###### WRITE YOUR CODE HERE ################
+    # HINT: control.lqr() takes plain numpy arrays and returns three
+    # things, the gain first, e.g.
+    #     K, _, _ = control.lqr(A, B, Q, R)
+
+    # 1. Pick out A and B at the unstable equilibrium
+    idx = stability.index('Unstable')
+
+    # 2. Convert sympy Matrix -> float numpy arrays
+    A = np.array(A_matrices[idx].tolist(), dtype=float)
+    B = np.array(B_matrices[idx].tolist(), dtype=float)
+
+    # 3. LQR gain (first of the three return values)
+    K, _, _ = control.lqr(A, B, Q, R)
+    K = np.asarray(K).flatten()   # 2-D (1x2) -> 1-D, one entry per state
+
+    ############################################
+
+    return K
+
+
+def main_function():    # Don't change anything in this function
+    eq_points = find_equilibrium_points()
+
+    if not eq_points:
+        print("No equilibrium points found.")
+        return None, None, None, None, None, None
+
+    A_matrices, B_matrices = find_A_B_matrices(eq_points)
+    eigen_values, stability = find_eigen_values(A_matrices)
+    K = compute_lqr_gain(A_matrices, B_matrices, stability)
+
+    return eq_points, A_matrices, B_matrices, eigen_values, stability, K
+
+
+def task1a_output(eq_points, A_matrices, B_matrices, eigen_values, stability, K):
+    '''
+    This function prints the results you have obtained.
+    '''
+    print("Equilibrium Points:")
+    for i, point in enumerate(eq_points):
+        print(f"  Point {i + 1}: theta = {point[0]}, omega = {point[1]}")
+
+    print("\nA Matrices at Equilibrium Points:")
+    for i, matrix in enumerate(A_matrices):
+        print(f"  At Point {i + 1}:")
+        print(sp.pretty(matrix, use_unicode=False))
+
+    print("\nB Matrices at Equilibrium Points:")
+    for i, matrix in enumerate(B_matrices):
+        print(f"  At Point {i + 1}: {sp.Matrix(matrix).T.tolist()[0]}")
+
+    print("\nEigenvalues at Equilibrium Points:")
+    for i, eigvals in enumerate(eigen_values):
+        eigvals_str = ', '.join([f"{val}: {count}" for val, count in eigvals.items()])
+        print(f"  At Point {i + 1}: {eigvals_str}")
+
+    print("\nStability of Equilibrium Points:")
+    for i, status in enumerate(stability):
+        print(f"  At Point {i + 1}: {status}")
+
+    print("\nLQR Gain Matrix K at the unstable Equilibrium Point:")
+    print(K)
+
+
+if __name__ == "__main__":
+    results = main_function()
+    eq_points, A_matrices, B_matrices, eigen_values, stability, K = results
+    task1a_output(eq_points, A_matrices, B_matrices, eigen_values, stability, K)
